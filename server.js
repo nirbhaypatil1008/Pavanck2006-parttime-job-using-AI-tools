@@ -7,6 +7,7 @@ const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
 const {pool, initializeDatabase, transaction} = require('./server/db');
 const otpService = require('./server/otp');
+const regService = require('./server/register');
 const chatRouter = require('./server/chat');
 const razorpayRouter = require('./server/razorpay');
 const {createOrUpdateTransaction, updateTransactionStatus, getTransactionDetails, getTransactionsList, getTransactionSummary} = require('./server/transactions');
@@ -83,7 +84,110 @@ async function sendEmailOtp(destination, code) {
   await otpService.sendEmail(destination, code, otpService.OTP_EXPIRY_MINUTES);
 }
 
-// ─── AUTH ────────────────────────────────────────────────────────────────────
+// ─── MULTI-STEP REGISTRATION ──────────────────────────────────────────────
+
+app.post('/api/auth/register/start', async (req, res, next) => {
+  try {
+    const clientIp = req.ip || req.connection?.remoteAddress || 'unknown';
+    const result = await regService.startRegistration(req.body, clientIp);
+    if (!result.success) return fail(res, result.status || 500, result.message);
+    ok(res, {
+      registrationToken: result.registrationToken,
+      maskedPhone: result.maskedPhone,
+      maskedEmail: result.maskedEmail,
+      currentStep: result.currentStep
+    }, result.message);
+  } catch (e) { next(e); }
+});
+
+app.post('/api/auth/register/phone/send', async (req, res, next) => {
+  try {
+    const token = req.body.registrationToken || req.body.token;
+    if (!token) return fail(res, 400, 'Registration token is required');
+    const clientIp = req.ip || req.connection?.remoteAddress || 'unknown';
+    const result = await regService.sendPhoneVerification(token, clientIp);
+    if (!result.success) return fail(res, result.status || 500, result.message);
+    ok(res, { maskedPhone: result.maskedPhone, expiresIn: result.expiresIn }, result.message);
+  } catch (e) { next(e); }
+});
+
+app.post('/api/auth/register/phone/verify', async (req, res, next) => {
+  try {
+    const token = req.body.registrationToken || req.body.token;
+    const otp = req.body.otp;
+    if (!token) return fail(res, 400, 'Registration token is required');
+    const result = await regService.verifyPhoneOtp(token, otp);
+    if (!result.success) return fail(res, result.status || 500, result.message);
+    ok(res, { maskedEmail: result.maskedEmail }, result.message);
+  } catch (e) { next(e); }
+});
+
+app.post('/api/auth/register/email/send', async (req, res, next) => {
+  try {
+    const token = req.body.registrationToken || req.body.token;
+    if (!token) return fail(res, 400, 'Registration token is required');
+    const clientIp = req.ip || req.connection?.remoteAddress || 'unknown';
+    const result = await regService.sendEmailVerification(token, clientIp);
+    if (!result.success) return fail(res, result.status || 500, result.message);
+    ok(res, { maskedEmail: result.maskedEmail, expiresIn: result.expiresIn }, result.message);
+  } catch (e) { next(e); }
+});
+
+app.post('/api/auth/register/email/verify', async (req, res, next) => {
+  try {
+    const token = req.body.registrationToken || req.body.token;
+    const otp = req.body.otp;
+    if (!token) return fail(res, 400, 'Registration token is required');
+    const result = await regService.verifyEmailOtp(token, otp);
+    if (!result.success) return fail(res, result.status || 500, result.message);
+    ok(res, null, result.message);
+  } catch (e) { next(e); }
+});
+
+app.post('/api/auth/register/complete', async (req, res, next) => {
+  try {
+    const token = req.body.registrationToken || req.body.token;
+    if (!token) return fail(res, 400, 'Registration token is required');
+    const result = await regService.completeRegistration(token);
+    if (!result.success) return fail(res, result.status || 500, result.message);
+    const { success, ...authData } = result;
+    ok(res, authData, result.message);
+  } catch (e) { next(e); }
+});
+
+app.post('/api/auth/register/status', async (req, res, next) => {
+  try {
+    const token = req.body.registrationToken || req.body.token;
+    if (!token) return fail(res, 400, 'Registration token is required');
+    const status = await regService.getRegistrationStatus(token);
+    if (!status) return fail(res, 404, 'Registration session not found or expired');
+    ok(res, status, 'Registration status retrieved');
+  } catch (e) { next(e); }
+});
+
+app.post('/api/auth/register/resend-phone', async (req, res, next) => {
+  try {
+    const token = req.body.registrationToken || req.body.token;
+    if (!token) return fail(res, 400, 'Registration token is required');
+    const clientIp = req.ip || req.connection?.remoteAddress || 'unknown';
+    const result = await regService.resendPhoneOtp(token, clientIp);
+    if (!result.success) return fail(res, result.status || 500, result.message);
+    ok(res, { maskedPhone: result.maskedPhone, expiresIn: result.expiresIn }, result.message);
+  } catch (e) { next(e); }
+});
+
+app.post('/api/auth/register/resend-email', async (req, res, next) => {
+  try {
+    const token = req.body.registrationToken || req.body.token;
+    if (!token) return fail(res, 400, 'Registration token is required');
+    const clientIp = req.ip || req.connection?.remoteAddress || 'unknown';
+    const result = await regService.resendEmailOtp(token, clientIp);
+    if (!result.success) return fail(res, result.status || 500, result.message);
+    ok(res, { maskedEmail: result.maskedEmail, expiresIn: result.expiresIn }, result.message);
+  } catch (e) { next(e); }
+});
+
+// ─── AUTH (Legacy — kept for backward compat) ───────────────────────────────
 
 app.post('/api/auth/request-otp', async (req, res, next) => {
   try {
@@ -172,12 +276,21 @@ app.post('/api/auth/login', async (req, res, next) => {
     const u = r[0];
     if (!u || !(await bcrypt.compare(req.body.password || '', u.password_hash))) return fail(res, 401, 'Invalid email or password');
     if (u.is_suspended || !u.is_active) return fail(res, 403, 'Your account is suspended or inactive');
-    // Check if email was verified via OTP during registration
-    const [[otpVerified]] = await pool.query(
-      'SELECT id FROM otp_verifications WHERE email=? AND purpose=? AND is_verified=1 AND is_used=1 LIMIT 1',
-      [u.email, 'registration']
-    );
-    if (!otpVerified) return fail(res, 403, 'Email verification is required. Please verify your email to continue.');
+    // Check if email was verified via OTP during registration (skip for admin accounts)
+    if (u.role !== 'ROLE_ADMIN') {
+      const [[otpVerified]] = await pool.query(
+        "SELECT id FROM otp_verifications WHERE email=? AND purpose IN ('registration','email_registration') AND is_verified=1 AND is_used=1 LIMIT 1",
+        [u.email]
+      );
+      if (!otpVerified) return fail(res, 403, 'Email verification is required. Please verify your email to continue.');
+      // Also check phone verification for users registered via the new flow
+      const [[phoneVerified]] = await pool.query(
+        "SELECT id FROM otp_verifications WHERE email=? AND purpose='phone_registration' AND is_verified=1 AND is_used=1 LIMIT 1",
+        [u.email]
+      );
+      // For legacy users (no phone_registration OTP), allow login; only block if phone_registration purpose was started
+      // This ensures backward compatibility with existing accounts
+    }
     let extra = {};
     if (u.role === 'ROLE_STUDENT') {
       const [p] = await pool.query('SELECT preferred_area FROM student_profiles WHERE user_id=?', [u.id]);

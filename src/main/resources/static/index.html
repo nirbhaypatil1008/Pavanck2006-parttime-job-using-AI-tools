@@ -226,9 +226,9 @@
           <button class="btn btn-outline-dark btn-sm px-3" onclick="App.openLoginModal()">
             <i class="bi bi-box-arrow-in-right me-1"></i>Sign In
           </button>
-          <button class="btn btn-primary-custom btn-sm px-3" onclick="App.openRegisterModal('ROLE_STUDENT')">
+          <a href="/register.html" class="btn btn-primary-custom btn-sm px-3">
             <i class="bi bi-person-plus me-1"></i>Register
-          </button>
+          </a>
         </div>
 
         <!-- Authenticated User Nav -->
@@ -317,9 +317,9 @@
               <button class="btn btn-primary-custom btn-lg px-4" onclick="App.navigate('jobs')">
                 <i class="bi bi-search me-2"></i>Find Jobs
               </button>
-              <button class="btn btn-outline-dark btn-lg px-4" onclick="App.openRegisterModal('ROLE_OWNER')">
+              <a href="/register.html" class="btn btn-outline-dark btn-lg px-4">
                 <i class="bi bi-plus-circle me-2"></i>Post a Job
-              </button>
+              </a>
             </div>
             <div class="d-flex flex-wrap gap-2 text-muted small">
               <span><i class="bi bi-check-circle-fill text-success me-1"></i>₹700 – ₹1,200 / Shift</span>
@@ -1950,7 +1950,7 @@
 
           <div class="text-center mt-3 small">
             Don't have an account?
-            <a href="javascript:void(0)" class="fw-bold text-primary" onclick="bootstrap.Modal.getInstance(document.getElementById('loginModal')).hide(); App.openRegisterModal('ROLE_STUDENT');">Register Now</a>
+            <a href="/register.html" class="fw-bold text-primary">Register Now</a>
           </div>
         </div>
       </div>

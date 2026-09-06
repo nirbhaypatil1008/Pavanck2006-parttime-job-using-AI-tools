@@ -211,6 +211,38 @@ CREATE TABLE IF NOT EXISTS otp_verifications (
     INDEX idx_otp_created (created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+-- 10b. Pending Registrations (multi-step registration state)
+CREATE TABLE IF NOT EXISTS pending_registrations (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    token VARCHAR(64) NOT NULL UNIQUE,
+    role VARCHAR(30) NOT NULL,
+    full_name VARCHAR(100) NOT NULL,
+    email VARCHAR(120) NOT NULL,
+    phone VARCHAR(20) NOT NULL,
+    password_hash VARCHAR(255) NOT NULL,
+    -- Student-specific
+    college_name VARCHAR(150),
+    preferred_area VARCHAR(100),
+    skills TEXT,
+    bio TEXT,
+    emergency_contact VARCHAR(20),
+    -- Owner-specific
+    catering_name VARCHAR(150),
+    business_address TEXT,
+    business_phone VARCHAR(20),
+    -- Verification state (server-authoritative)
+    phone_verified INTEGER DEFAULT 0,
+    email_verified INTEGER DEFAULT 0,
+    status VARCHAR(30) DEFAULT 'pending',
+    current_step VARCHAR(30) DEFAULT 'info',
+    created_at TEXT DEFAULT (datetime('now','localtime')),
+    updated_at TEXT DEFAULT (datetime('now','localtime')),
+    expires_at TEXT NOT NULL,
+    INDEX idx_pend_token (token),
+    INDEX idx_pend_email (email),
+    INDEX idx_pend_phone (phone)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 -- 11. Audit Logs
 CREATE TABLE IF NOT EXISTS audit_logs (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,

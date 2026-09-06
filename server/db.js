@@ -202,6 +202,35 @@ async function initializeDatabase() {
   try { db.exec('CREATE INDEX idx_otp_expires ON otp_verifications(expires_at)'); } catch(e) {}
   try { db.exec('CREATE INDEX idx_otp_created ON otp_verifications(created_at)'); } catch(e) {}
 
+  // Pending registrations table (multi-step registration state)
+  db.exec(`CREATE TABLE IF NOT EXISTS pending_registrations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    token TEXT NOT NULL UNIQUE,
+    role TEXT NOT NULL,
+    full_name TEXT NOT NULL,
+    email TEXT NOT NULL,
+    phone TEXT NOT NULL,
+    password_hash TEXT NOT NULL,
+    college_name TEXT,
+    preferred_area TEXT,
+    skills TEXT,
+    bio TEXT,
+    emergency_contact TEXT,
+    catering_name TEXT,
+    business_address TEXT,
+    business_phone TEXT,
+    phone_verified INTEGER DEFAULT 0,
+    email_verified INTEGER DEFAULT 0,
+    status TEXT DEFAULT 'pending',
+    current_step TEXT DEFAULT 'info',
+    created_at TEXT DEFAULT (datetime('now','localtime')),
+    updated_at TEXT DEFAULT (datetime('now','localtime')),
+    expires_at TEXT NOT NULL
+  )`);
+  try { db.exec('CREATE INDEX idx_pend_token ON pending_registrations(token)'); } catch(e) {}
+  try { db.exec('CREATE INDEX idx_pend_email ON pending_registrations(email)'); } catch(e) {}
+  try { db.exec('CREATE INDEX idx_pend_phone ON pending_registrations(phone)'); } catch(e) {}
+
   // Add complaint_messages table
   db.exec(`CREATE TABLE IF NOT EXISTS complaint_messages (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

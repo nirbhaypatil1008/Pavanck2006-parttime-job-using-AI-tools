@@ -1,0 +1,376 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Register — PartTime Job</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
+  <link rel="stylesheet" href="/css/style.css">
+  <style>
+    .reg-wizard { max-width: 560px; margin: 40px auto; padding: 0 16px; }
+    .reg-card { background: var(--light-surface, #fff); border-radius: 16px; box-shadow: 0 4px 24px rgba(0,0,0,0.08); overflow: hidden; }
+    .reg-card-header { background: linear-gradient(135deg, var(--primary, #4f46e5), var(--accent, #7c3aed)); padding: 28px 24px; text-align: center; }
+    .reg-card-header h1 { color: #fff; font-size: 1.4rem; font-weight: 700; margin: 0; }
+    .reg-card-header p { color: rgba(255,255,255,0.85); font-size: 0.9rem; margin: 6px 0 0; }
+    .reg-card-body { padding: 28px 24px; }
+
+    /* Progress Steps */
+    .reg-progress { display: flex; align-items: center; justify-content: center; gap: 0; padding: 20px 24px 0; }
+    .reg-step-dot { width: 32px; height: 32px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 0.75rem; font-weight: 700; color: #fff; background: #cbd5e1; transition: all 0.3s; flex-shrink: 0; }
+    .reg-step-dot.active { background: var(--primary, #4f46e5); box-shadow: 0 0 0 4px rgba(79,70,229,0.2); }
+    .reg-step-dot.done { background: #10b981; }
+    .reg-step-line { width: 40px; height: 3px; background: #e2e8f0; flex-shrink: 0; transition: background 0.3s; }
+    .reg-step-line.done { background: #10b981; }
+
+    .reg-step-labels { display: flex; justify-content: space-between; padding: 8px 8px 0; max-width: 340px; margin: 0 auto; }
+    .reg-step-label { font-size: 0.6rem; color: #94a3b8; text-align: center; flex: 1; transition: color 0.3s; }
+    .reg-step-label.active { color: var(--primary, #4f46e5); font-weight: 600; }
+
+    /* OTP inputs */
+    .otp-input-group { display: flex; gap: 8px; justify-content: center; margin: 16px 0; }
+    .otp-input-group input { width: 48px; height: 56px; text-align: center; font-size: 1.4rem; font-weight: 700; border: 2px solid #e2e8f0; border-radius: 12px; outline: none; transition: border-color 0.2s; font-family: monospace; }
+    .otp-input-group input:focus { border-color: var(--primary, #4f46e5); box-shadow: 0 0 0 3px rgba(79,70,229,0.15); }
+    .otp-input-group input.filled { border-color: #10b981; background: #f0fdf4; }
+
+    .masked-info { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 10px; padding: 12px 16px; text-align: center; margin: 12px 0; }
+    .masked-info .label { font-size: 0.75rem; color: #64748b; text-transform: uppercase; letter-spacing: 0.05em; }
+    .masked-info .value { font-size: 1.1rem; font-weight: 600; color: #1e293b; margin-top: 2px; font-family: monospace; }
+
+    .reg-btn { width: 100%; padding: 12px; font-weight: 600; border-radius: 10px; font-size: 0.95rem; border: none; cursor: pointer; transition: all 0.2s; }
+    .reg-btn-primary { background: linear-gradient(135deg, var(--primary, #4f46e5), var(--accent, #7c3aed)); color: #fff; }
+    .reg-btn-primary:hover { opacity: 0.9; transform: translateY(-1px); box-shadow: 0 4px 12px rgba(79,70,229,0.3); }
+    .reg-btn-primary:disabled { opacity: 0.5; cursor: not-allowed; transform: none; box-shadow: none; }
+    .reg-btn-secondary { background: #f1f5f9; color: #475569; border: 1px solid #e2e8f0; }
+    .reg-btn-secondary:hover { background: #e2e8f0; }
+
+    .reg-timer { font-size: 0.85rem; color: #64748b; text-align: center; margin: 8px 0; }
+    .reg-timer strong { color: var(--primary, #4f46e5); }
+
+    .reg-link { color: var(--primary, #4f46e5); cursor: pointer; text-decoration: none; font-size: 0.85rem; }
+    .reg-link:hover { text-decoration: underline; }
+
+    .reg-success { text-align: center; padding: 20px 0; }
+    .reg-success .check-circle { width: 80px; height: 80px; border-radius: 50%; background: #ecfdf5; display: flex; align-items: center; justify-content: center; margin: 0 auto 16px; }
+    .reg-success .check-circle i { font-size: 2.5rem; color: #10b981; }
+
+    .form-label-custom { font-size: 0.85rem; font-weight: 600; color: #374151; margin-bottom: 6px; }
+    .form-label-custom .required { color: #ef4444; }
+    .form-control-custom { border: 1.5px solid #e2e8f0; border-radius: 10px; padding: 10px 14px; font-size: 0.9rem; transition: border-color 0.2s; }
+    .form-control-custom:focus { border-color: var(--primary, #4f46e5); box-shadow: 0 0 0 3px rgba(79,70,229,0.1); outline: none; }
+    .form-select-custom { border: 1.5px solid #e2e8f0; border-radius: 10px; padding: 10px 14px; font-size: 0.9rem; }
+    .form-error { font-size: 0.78rem; color: #ef4444; margin-top: 4px; display: none; }
+
+    .account-type-card { border: 2px solid #e2e8f0; border-radius: 12px; padding: 20px; cursor: pointer; transition: all 0.2s; text-align: center; }
+    .account-type-card:hover { border-color: var(--primary, #4f46e5); background: #f8fafc; }
+    .account-type-card.selected { border-color: var(--primary, #4f46e5); background: rgba(79,70,229,0.05); box-shadow: 0 0 0 3px rgba(79,70,229,0.15); }
+    .account-type-card .icon { font-size: 2rem; margin-bottom: 8px; }
+    .account-type-card .title { font-weight: 700; font-size: 1rem; color: #1e293b; }
+    .account-type-card .desc { font-size: 0.8rem; color: #64748b; margin-top: 4px; }
+
+    .back-link { display: inline-flex; align-items: center; gap: 6px; color: #64748b; font-size: 0.85rem; cursor: pointer; margin-bottom: 16px; }
+    .back-link:hover { color: var(--primary, #4f46e5); }
+
+    .reg-step { display: none; }
+    .reg-step.active { display: block; }
+
+    @media (max-width: 576px) {
+      .reg-wizard { margin: 20px auto; }
+      .reg-card-body { padding: 20px 16px; }
+      .otp-input-group input { width: 42px; height: 50px; font-size: 1.2rem; }
+      .reg-step-labels { display: none; }
+    }
+  </style>
+</head>
+<body>
+  <nav class="navbar navbar-expand-lg navbar-custom">
+    <div class="container">
+      <a class="navbar-brand" href="/">
+        <span class="brand-badge"><i class="bi bi-briefcase-fill"></i><span class="brand-text">PartTime Job</span></span>
+      </a>
+    </div>
+  </nav>
+
+  <div class="reg-wizard">
+    <!-- Progress Indicator -->
+    <div class="reg-progress" id="regProgress">
+      <div class="reg-step-dot active" id="dot1">1</div>
+      <div class="reg-step-line" id="line1"></div>
+      <div class="reg-step-dot" id="dot2">2</div>
+      <div class="reg-step-line" id="line2"></div>
+      <div class="reg-step-dot" id="dot3">3</div>
+      <div class="reg-step-line" id="line3"></div>
+      <div class="reg-step-dot" id="dot4">4</div>
+      <div class="reg-step-line" id="line4"></div>
+      <div class="reg-step-dot" id="dot5">5</div>
+    </div>
+    <div class="reg-step-labels" id="stepLabels">
+      <span class="reg-step-label active">Account</span>
+      <span class="reg-step-label">Details</span>
+      <span class="reg-step-label">Phone</span>
+      <span class="reg-step-label">Email</span>
+      <span class="reg-step-label">Done</span>
+    </div>
+
+    <div class="reg-card" style="margin-top:16px;">
+      <!-- STEP 1: Account Type -->
+      <div class="reg-step active" id="step1">
+        <div class="reg-card-header">
+          <h1>Create Your Account</h1>
+          <p>Choose how you want to use PartTime Job</p>
+        </div>
+        <div class="reg-card-body">
+          <div class="row g-3 mb-4">
+            <div class="col-6">
+              <div class="account-type-card" id="typeStudent" onclick="RegWizard.selectType('ROLE_STUDENT')">
+                <div class="icon">🎓</div>
+                <div class="title">Student</div>
+                <div class="desc">Find catering & event jobs</div>
+              </div>
+            </div>
+            <div class="col-6">
+              <div class="account-type-card" id="typeOwner" onclick="RegWizard.selectType('ROLE_OWNER')">
+                <div class="icon">👔</div>
+                <div class="title">Owner</div>
+                <div class="desc">Post jobs & hire students</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- STEP 2: Personal Information -->
+      <div class="reg-step" id="step2">
+        <div class="reg-card-header">
+          <h1 id="step2Title">Your Information</h1>
+          <p>Tell us about yourself</p>
+        </div>
+        <div class="reg-card-body">
+          <div class="back-link" onclick="RegWizard.goToStep(1)"><i class="bi bi-arrow-left"></i> Back</div>
+          <form id="regInfoForm" onsubmit="return RegWizard.submitInfo(event)">
+            <!-- Common fields -->
+            <div class="mb-3">
+              <label class="form-label-custom">Full Name <span class="required">*</span></label>
+              <input type="text" class="form-control form-control-custom" id="regFullName" required maxlength="100" placeholder="Enter your full name">
+            </div>
+            <div class="mb-3">
+              <label class="form-label-custom">Email Address <span class="required">*</span></label>
+              <input type="email" class="form-control form-control-custom" id="regEmail" required placeholder="you@example.com">
+            </div>
+            <div class="mb-3">
+              <label class="form-label-custom">Phone Number <span class="required">*</span></label>
+              <input type="tel" class="form-control form-control-custom" id="regPhone" required placeholder="+91 9876543210">
+              <div class="form-error" id="regPhoneError"></div>
+            </div>
+            <div class="mb-3">
+              <label class="form-label-custom">Password <span class="required">*</span></label>
+              <input type="password" class="form-control form-control-custom" id="regPassword" required minlength="6" placeholder="Min. 6 characters">
+            </div>
+            <div class="mb-3">
+              <label class="form-label-custom">Confirm Password <span class="required">*</span></label>
+              <input type="password" class="form-control form-control-custom" id="regConfirmPassword" required placeholder="Re-enter your password">
+              <div class="form-error" id="regPassError"></div>
+            </div>
+
+            <!-- Student-specific -->
+            <div id="studentFields" style="display:none;">
+              <hr><p class="text-muted small fw-bold mb-3">STUDENT DETAILS</p>
+              <div class="mb-3">
+                <label class="form-label-custom">College Name</label>
+                <input type="text" class="form-control form-control-custom" id="regCollegeName" placeholder="Your college/university">
+              </div>
+              <div class="mb-3">
+                <label class="form-label-custom">Preferred Area</label>
+                <input type="text" class="form-control form-control-custom" id="regPrefArea" placeholder="e.g. Koramangala, Bangalore">
+              </div>
+              <div class="mb-3">
+                <label class="form-label-custom">Skills</label>
+                <input type="text" class="form-control form-control-custom" id="regSkills" placeholder="e.g. Guest Hospitality, Counter Assistance">
+              </div>
+            </div>
+
+            <!-- Owner-specific -->
+            <div id="ownerFields" style="display:none;">
+              <hr><p class="text-muted small fw-bold mb-3">BUSINESS DETAILS</p>
+              <div class="mb-3">
+                <label class="form-label-custom">Catering / Business Name <span class="required">*</span></label>
+                <input type="text" class="form-control form-control-custom" id="regCateringName" placeholder="Your business name">
+              </div>
+              <div class="mb-3">
+                <label class="form-label-custom">Business Address</label>
+                <input type="text" class="form-control form-control-custom" id="regBusinessAddress" placeholder="Business address">
+              </div>
+              <div class="mb-3">
+                <label class="form-label-custom">Business Phone</label>
+                <input type="tel" class="form-control form-control-custom" id="regBusinessPhone" placeholder="Business contact number">
+              </div>
+            </div>
+
+            <button type="submit" class="reg-btn reg-btn-primary mt-2" id="regInfoSubmitBtn">
+              <i class="bi bi-arrow-right me-2"></i>Continue to Verification
+            </button>
+          </form>
+          <p class="text-center mt-3 mb-0"><span class="text-muted">Already have an account?</span> <a href="/" class="reg-link">Sign in</a></p>
+        </div>
+      </div>
+
+      <!-- STEP 3: Phone Verification -->
+      <div class="reg-step" id="step3">
+        <div class="reg-card-header" style="background:linear-gradient(135deg,#0d9488,#0891b2);">
+          <h1>📱 Verify Phone Number</h1>
+          <p>We'll send a verification code to your phone</p>
+        </div>
+        <div class="reg-card-body">
+          <div class="masked-info">
+            <div class="label">Sending code to</div>
+            <div class="value" id="phoneDisplay"></div>
+          </div>
+          <p class="text-center text-muted small mb-3">Enter the 6-digit code sent to your phone</p>
+
+          <div class="otp-input-group" id="phoneOtpGroup">
+            <input type="tel" maxlength="1" inputmode="numeric" class="otp-digit" data-idx="0">
+            <input type="tel" maxlength="1" inputmode="numeric" class="otp-digit" data-idx="1">
+            <input type="tel" maxlength="1" inputmode="numeric" class="otp-digit" data-idx="2">
+            <input type="tel" maxlength="1" inputmode="numeric" class="otp-digit" data-idx="3">
+            <input type="tel" maxlength="1" inputmode="numeric" class="otp-digit" data-idx="4">
+            <input type="tel" maxlength="1" inputmode="numeric" class="otp-digit" data-idx="5">
+          </div>
+
+          <button class="reg-btn reg-btn-primary mt-3" id="phoneVerifyBtn" onclick="RegWizard.verifyPhone()">
+            <i class="bi bi-shield-check me-2"></i>Verify Phone
+          </button>
+
+          <div class="text-center mt-3">
+            <div id="phoneResendTimer" class="reg-timer" style="display:none;"></div>
+            <button class="reg-btn reg-btn-secondary mt-2" id="phoneResendBtn" onclick="RegWizard.resendPhone()" style="display:none;">
+              <i class="bi bi-arrow-clockwise me-1"></i>Resend Code
+            </button>
+          </div>
+
+          <div class="text-center mt-3">
+            <span class="reg-link" onclick="RegWizard.goToStep(2)"><i class="bi bi-arrow-left me-1"></i>Change phone number</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- STEP 4: Email Verification -->
+      <div class="reg-step" id="step4">
+        <div class="reg-card-header">
+          <h1>✉️ Verify Email</h1>
+          <p>Confirm your email address</p>
+        </div>
+        <div class="reg-card-body">
+          <div class="masked-info">
+            <div class="label">Sending code to</div>
+            <div class="value" id="emailDisplay"></div>
+          </div>
+          <p class="text-center text-muted small mb-3">Enter the 6-digit code sent to your email</p>
+
+          <div class="otp-input-group" id="emailOtpGroup">
+            <input type="tel" maxlength="1" inputmode="numeric" class="otp-digit" data-idx="0">
+            <input type="tel" maxlength="1" inputmode="numeric" class="otp-digit" data-idx="1">
+            <input type="tel" maxlength="1" inputmode="numeric" class="otp-digit" data-idx="2">
+            <input type="tel" maxlength="1" inputmode="numeric" class="otp-digit" data-idx="3">
+            <input type="tel" maxlength="1" inputmode="numeric" class="otp-digit" data-idx="4">
+            <input type="tel" maxlength="1" inputmode="numeric" class="otp-digit" data-idx="5">
+          </div>
+
+          <button class="reg-btn reg-btn-primary mt-3" id="emailVerifyBtn" onclick="RegWizard.verifyEmail()">
+            <i class="bi bi-shield-check me-2"></i>Verify Email
+          </button>
+
+          <div class="text-center mt-3">
+            <div id="emailResendTimer" class="reg-timer" style="display:none;"></div>
+            <button class="reg-btn reg-btn-secondary mt-2" id="emailResendBtn" onclick="RegWizard.resendEmail()" style="display:none;">
+              <i class="bi bi-arrow-clockwise me-1"></i>Resend Code
+            </button>
+          </div>
+
+          <div class="text-center mt-3">
+            <span class="reg-link" onclick="RegWizard.goToStep(2)"><i class="bi bi-arrow-left me-1"></i>Change email</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- STEP 5: Complete -->
+      <div class="reg-step" id="step5">
+        <div class="reg-card-body">
+          <div class="reg-success" id="regSuccessPending" style="display:none;">
+            <div style="font-size:3rem;margin-bottom:12px;">✅</div>
+            <h3 style="font-weight:700;color:#1e293b;">Ready to Create Your Account</h3>
+            <p class="text-muted mb-4">Both phone and email have been verified. Click below to complete your registration.</p>
+            <button class="reg-btn reg-btn-primary" id="regCompleteBtn" onclick="RegWizard.completeRegistration()">
+              <i class="bi bi-check-circle me-2"></i>Complete Registration
+            </button>
+          </div>
+          <div class="reg-success" id="regSuccessDone" style="display:none;">
+            <div class="check-circle"><i class="bi bi-check-lg"></i></div>
+            <h3 style="font-weight:700;color:#1e293b;">Registration Complete! 🎉</h3>
+            <p class="text-muted mb-4">Your account has been created successfully. Welcome to PartTime Job!</p>
+            <button class="reg-btn reg-btn-primary" onclick="RegWizard.goToLogin()">
+              <i class="bi bi-box-arrow-in-right me-2"></i>Sign In
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast container -->
+  <div class="toast-container-custom position-fixed" style="top:70px;right:16px;z-index:9999;"></div>
+
+  <script>
+    // Minimal toast (doesn't need full App.js)
+    function showToast(message, type='info') {
+      const container = document.querySelector('.toast-container-custom') || document.body;
+      const colors = { success:'#10b981', danger:'#ef4444', warning:'#f59e0b', info:'#3b82f6' };
+      const icons = { success:'bi-check-circle-fill', danger:'bi-x-circle-fill', warning:'bi-exclamation-triangle-fill', info:'bi-info-circle-fill' };
+      const toast = document.createElement('div');
+      toast.className = 'toast align-items-center border-0 show';
+      toast.style.cssText = `background:${colors[type]||colors.info};color:#fff;border-radius:10px;margin-bottom:8px;min-width:280px;box-shadow:0 4px 12px rgba(0,0,0,0.15);`;
+      toast.innerHTML = `<div class="d-flex align-items-center p-3"><i class="bi ${icons[type]||icons.info} me-2 fs-5"></i><div class="toast-body flex-grow-1" style="font-size:0.9rem;">${message}</div><button type="button" class="btn-close btn-close-white ms-2" onclick="this.closest('.toast').remove()"></button></div>`;
+      container.appendChild(toast);
+      setTimeout(() => { toast.style.opacity = '0'; toast.style.transition = 'opacity 0.3s'; setTimeout(() => toast.remove(), 300); }, 4000);
+    }
+
+    // OTP input auto-advance
+    document.addEventListener('DOMContentLoaded', () => {
+      document.querySelectorAll('.otp-input-group').forEach(group => {
+        const inputs = group.querySelectorAll('.otp-digit');
+        inputs.forEach((input, i) => {
+          input.addEventListener('input', (e) => {
+            e.target.value = e.target.value.replace(/[^0-9]/g, '');
+            if (e.target.value && i < inputs.length - 1) inputs[i + 1].focus();
+            e.target.classList.toggle('filled', !!e.target.value);
+          });
+          input.addEventListener('keydown', (e) => {
+            if (e.key === 'Backspace' && !e.target.value && i > 0) {
+              inputs[i - 1].focus();
+              inputs[i - 1].value = '';
+              inputs[i - 1].classList.remove('filled');
+            }
+          });
+          input.addEventListener('paste', (e) => {
+            e.preventDefault();
+            const paste = (e.clipboardData || window.clipboardData).getData('text').replace(/\D/g, '').slice(0, 6);
+            paste.split('').forEach((ch, j) => {
+              if (inputs[j]) { inputs[j].value = ch; inputs[j].classList.add('filled'); }
+            });
+            if (paste.length > 0) inputs[Math.min(paste.length, inputs.length) - 1].focus();
+          });
+        });
+      });
+    });
+
+    function getOtpValue(groupId) {
+      const inputs = document.querySelectorAll(`#${groupId} .otp-digit`);
+      return Array.from(inputs).map(i => i.value).join('');
+    }
+    function clearOtpInputs(groupId) {
+      document.querySelectorAll(`#${groupId} .otp-digit`).forEach(i => { i.value = ''; i.classList.remove('filled'); });
+      document.querySelector(`#${groupId} .otp-digit`)?.focus();
+    }
+  </script>
+  <script src="/js/register.js"></script>
+</body>
+</html>
