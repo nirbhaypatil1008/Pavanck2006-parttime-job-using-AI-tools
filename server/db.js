@@ -10,7 +10,7 @@ const DB_NAME = process.env.DB_NAME || 'parttimejob_db';
 const DB_USER = process.env.DB_USER || 'root';
 const DB_PASSWORD = process.env.DB_PASSWORD || '';
 
-const pool = mysql.createPool({
+const rawPool = mysql.createPool({
   host: DB_HOST,
   port: DB_PORT,
   user: DB_USER,
@@ -20,6 +20,22 @@ const pool = mysql.createPool({
   connectionLimit: 10,
   dateStrings: true, // return DATETIME/TIMESTAMP as strings, matching previous string-based timestamps
   charset: 'utf8mb4_general_ci',
+});
+
+// Exported pool: wraps the raw mysql2 pool so that translateSql/coerceParams
+// apply to every pool.query(...) call in the server, not just call sites that
+// go through this module. All other pool members pass through untouched.
+const pool = new Proxy(rawPool, {
+  get(target, prop) {
+    if (prop === 'query' || prop === 'execute') {
+      return (sqlOrOpts, params) => {
+        const sql = typeof sqlOrOpts === 'string' ? sqlOrOpts : (sqlOrOpts && (sqlOrOpts.sql || sqlOrOpts));
+        return target[prop](translateSql(sql), coerceParams(params));
+      };
+    }
+    const value = Reflect.get(target, prop, target);
+    return typeof value === 'function' ? value.bind(target) : value;
+  },
 });
 
 // ─── Dialect translation (a few server statements still contain SQLite-isms) ─
@@ -65,11 +81,22 @@ function translateSql(sql) {
   return s;
 }
 
-// ─── Query API (mysql2/promise compatible) ───────────────────────────────────
+// ─── Param coercion (server code stores some timestamps as ISO-8601 strings) ─
+// SQLite accepted ISO strings like '2026-09-09T10:20:43.205Z' in timestamp
+// columns; MySQL rejects the 'T'/'Z' format. Convert to 'YYYY-MM-DD HH:MM:SS'
+// (UTC) before binding so timestamp comparisons keep working unchanged.
 
-function query(sqlOrOpts, params) {
-  const sql = typeof sqlOrOpts === 'string' ? sqlOrOpts : (sqlOrOpts && (sqlOrOpts.sql || sqlOrOpts));
-  return pool.query(translateSql(sql), params);
+const ISO_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:?\d{2})?$/;
+
+function isoToMysql(value) {
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return value; // let MySQL surface a real error
+  return d.toISOString().slice(0, 19).replace('T', ' ');
+}
+
+function coerceParams(params) {
+  if (!Array.isArray(params) || params.length === 0) return params;
+  return params.map((p) => (typeof p === 'string' && ISO_RE.test(p) ? isoToMysql(p) : p));
 }
 
 // ─── Transactions ────────────────────────────────────────────────────────────
@@ -79,7 +106,7 @@ async function transaction(work) {
   try {
     await conn.beginTransaction();
     const wrapped = {
-      query(sql, params) { return conn.query(translateSql(sql), params); },
+      query(sql, params) { return conn.query(translateSql(sql), coerceParams(params)); },
     };
     const result = await work(wrapped);
     await conn.commit();
@@ -185,7 +212,7 @@ async function initializeDatabase() {
         [DB_NAME, table, column]
       );
       if (cols.length === 0) {
-        await pool.query(`ALTER TABLE \`${table}\` ADD COLUMN ${ddl}`);
+        await pool.query(`ALTER TABLE \`${table}\` ADD COLUMN \`${column}\` ${ddl}`);
       }
     } catch (e) {
       console.error(`Migration ${table}.${column} failed:`, e.message.substring(0, 120));

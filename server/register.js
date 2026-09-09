@@ -512,6 +512,14 @@ async function completeRegistration(registrationToken) {
         [pending.token, PHONE_PURPOSE, EMAIL_PURPOSE]
       );
 
+      // Re-key verified OTP records from the registration token to the user's
+      // real email so the login flow's verification check (which looks up by
+      // email) recognizes accounts created through this multi-step wizard.
+      await c.query(
+        "UPDATE otp_verifications SET email=? WHERE email=? AND purpose IN (?,?) AND is_verified=1",
+        [pending.email, pending.token, PHONE_PURPOSE, EMAIL_PURPOSE]
+      );
+
       const [u] = await c.query('SELECT * FROM users WHERE id=?', [x.insertId]);
       return u[0];
     });
