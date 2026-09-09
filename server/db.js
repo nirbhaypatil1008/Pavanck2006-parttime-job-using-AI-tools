@@ -1,162 +1,98 @@
 const fs = require('fs');
 const path = require('path');
-const Database = require('better-sqlite3');
+const mysql = require('mysql2/promise');
 
+// ─── MySQL connection (mysql2/promise) ───────────────────────────────────────
 
-const dbPath = path.join(__dirname, '..', 'data', 'parttimejob.db');
-const dataDir = path.join(__dirname, '..', 'data');
-if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
+const DB_HOST = process.env.DB_HOST || '127.0.0.1';
+const DB_PORT = Number(process.env.DB_PORT || 3306);
+const DB_NAME = process.env.DB_NAME || 'parttimejob_db';
+const DB_USER = process.env.DB_USER || 'root';
+const DB_PASSWORD = process.env.DB_PASSWORD || '';
 
-const db = new Database(dbPath);
-db.pragma('journal_mode = WAL');
-db.pragma('foreign_keys = ON');
+const pool = mysql.createPool({
+  host: DB_HOST,
+  port: DB_PORT,
+  user: DB_USER,
+  password: DB_PASSWORD,
+  database: DB_NAME,
+  waitForConnections: true,
+  connectionLimit: 10,
+  dateStrings: true, // return DATETIME/TIMESTAMP as strings, matching previous string-based timestamps
+  charset: 'utf8mb4_general_ci',
+});
 
-// ─── MySQL → SQLite SQL Transformer ────────────────────────────────────────
+// ─── Dialect translation (a few server statements still contain SQLite-isms) ─
+// Server-side SQL was written while the backend ran on SQLite, so a couple of
+// statements use datetime('now','localtime') / INSERT OR IGNORE. They are
+// translated here so the rest of the server keeps working unchanged on MySQL.
 
-function convertSchemaSql(sql) {
+function translateSql(sql) {
+  if (typeof sql !== 'string') return sql;
   let s = sql;
-  s = s.replace(/ENGINE\s*=\s*InnoDB[^;]*/gi, '');
-  s = s.replace(/DEFAULT\s+CHARSET\s*=\s*\w+/gi, '');
-  s = s.replace(/COLLATE\s*=\s*\w+/gi, '');
-  s = s.replace(/\bBIGINT\b\s+AUTO_INCREMENT\s+PRIMARY\s+KEY/gi, 'INTEGER PRIMARY KEY AUTOINCREMENT');
-  s = s.replace(/\bBIGINT\b/gi, 'INTEGER');
-  s = s.replace(/\bVARCHAR\s*\([^)]+\)/gi, 'TEXT');
-  s = s.replace(/\bDOUBLE\b/gi, 'REAL');
-  s = s.replace(/\bDECIMAL\s*\([^)]+\)/gi, 'REAL');
-  s = s.replace(/\bBOOLEAN\b/gi, 'INTEGER');
-  s = s.replace(/,\s*ON\s+UPDATE\s+CURRENT_TIMESTAMP/gi, '');
-  s = s.replace(/ON\s+UPDATE\s+CURRENT_TIMESTAMP\s*,?/gi, '');
-  s = s.replace(/DEFAULT\s+TRUE/gi, 'DEFAULT 1');
-  s = s.replace(/DEFAULT\s+FALSE/gi, 'DEFAULT 0');
-  s = s.replace(/\bTIMESTAMP\b(?!\s+NULL\b)/gi, 'TEXT');
-  s = s.replace(/\bTIMESTAMP\s+NULL\b/gi, 'TEXT');
-  s = s.replace(/DEFAULT\s+CURRENT_TIMESTAMP/gi, "DEFAULT (datetime('now','localtime'))");
-  s = s.replace(/UNIQUE\s+KEY\s+\w+/gi, 'UNIQUE');
-  s = s.replace(/,?\s*INDEX\s+\w+\s*\([^)]+\)/gi, '');
-  s = s.replace(/,?\s*CONSTRAINT\s+\w+\s+FOREIGN\s+KEY[^)]+\)\s+REFERENCES[^)]+\)(?:\s+ON\s+DELETE\s+(?:CASCADE|SET\s+NULL))?/gi, '');
-  s = s.replace(/,\s*\)/g, '\n)');
-  return s;
-}
 
-function convertQuerySql(sql) {
-  let s = sql;
-  s = s.replace(/\bNOW\(\)/gi, "datetime('now','localtime')");
-  s = s.replace(/\bFOR\s+UPDATE\b/gi, '');
-  s = s.replace(/\bIF\s*\(([^,]+),\s*'([^']*)',\s*'([^']*)'\)/gi, "CASE WHEN $1 THEN '$2' ELSE '$3' END");
-  s = s.replace(/\bIF\s*\(([^,]+),\s*(\d+),\s*(\d+)\)/gi, "CASE WHEN $1 THEN $2 ELSE $3 END");
-  // MySQL YEAR()/MONTH() → SQLite strftime
-  s = s.replace(/\bYEAR\(([^)]+)\)/gi, "strftime('%Y',$1)");
-  s = s.replace(/\bMONTH\(([^)]+)\)/gi, "strftime('%m',$1)");
-  // MySQL IS TRUE/FALSE comparisons
-  s = s.replace(/(\w+)\s*=\s*FALSE/gi, "$1 = 0");
-  s = s.replace(/(\w+)\s*=\s*TRUE/gi, "$1 = 1");
-  // Handle standalone FALSE/TRUE in WHERE clauses
-  s = s.replace(/\bFALSE\b/gi, '0');
-  s = s.replace(/\bTRUE\b/gi, '1');
-  // MySQL double-quoted string literals → single-quoted (SQLite treats double quotes as identifiers)
-  s = s.replace(/"([^"]+)"/g, "'$1'");
-
-  // ─── UPDATE ... JOIN ... SET ... WHERE ... ──────────────────────────────
-  const updateJoinMatch = s.match(
-    /^UPDATE\s+(\w+)\s+(\w+)\s+JOIN\s+(\w+)\s+(\w+)\s+ON\s+\w+\.(\w+)\s*=\s*\w+\.(\w+)\s+SET\s+(.+?)\s+WHERE\s+(.+)$/is
-  );
-  if (updateJoinMatch) {
-    const [, t1, a, t2, b, joinCol2, joinCol1, setClause, whereClause] = updateJoinMatch;
-    let newSet = setClause.replace(new RegExp(`\\b${a}\\.`, 'g'), '');
-    let newWhere = whereClause;
-    newWhere = newWhere.replace(
-      new RegExp(`(\\w+\\.)?(\\w+)\\s*=\\s*\\?`, 'g'),
-      (match, prefix, colName) => {
-        if (prefix && prefix.trim() === b + '.') {
-          return `${joinCol1} IN (SELECT ${joinCol2} FROM ${t2} WHERE ${colName}=?)`;
+  // SQLite datetime('now'[,'localtime'][,'±N unit']) → MySQL NOW() with INTERVAL offsets
+  //   datetime('now','localtime')              → NOW()
+  //   datetime('now','localtime','-15 minutes') → NOW() - 15 MINUTE
+  //   datetime('now','-1 day','localtime')      → NOW() - 1 DAY
+  s = s.replace(
+    /datetime\s*\(\s*'now'\s*((?:,\s*'[^']*'\s*)*)\)/gi,
+    (match, argsRaw) => {
+      const mods = [];
+      const re = /'([^']*)'/g;
+      let m;
+      while ((m = re.exec(argsRaw))) mods.push(m[1].trim().toLowerCase());
+      const offsets = [];
+      for (const mod of mods) {
+        if (mod === 'localtime' || mod === 'utc') continue; // NOW() is already local time
+        const off = mod.match(/^([+-])?\s*(\d+)\s+(days?|hours?|minutes?|seconds?|months?|years?)$/);
+        if (off) {
+          const n = parseInt(off[2], 10) * (off[1] === '-' ? -1 : 1);
+          let unit = off[3].toUpperCase();
+          if (unit.endsWith('S')) unit = unit.slice(0, -1);
+          offsets.push(`${n < 0 ? '-' : '+'} ${Math.abs(n)} ${unit}`);
         }
-        return match;
       }
-    );
-    newWhere = newWhere.replace(new RegExp(`\\b${a}\\.`, 'g'), '');
-    s = `UPDATE ${t1} SET ${newSet} WHERE ${newWhere}`;
-  }
-
-  // ─── DELETE ... JOIN ... WHERE ... ──────────────────────────────────────
-  const deleteJoinMatch = s.match(
-    /^DELETE\s+\w+\s+FROM\s+(\w+)\s+(\w+)\s+JOIN\s+(\w+)\s+(\w+)\s+ON\s+\w+\.(\w+)\s*=\s*\w+\.(\w+)\s+WHERE\s+(.+)$/is
+      if (offsets.length === 0) return 'NOW()';
+      return `NOW() ${offsets.join(' ')}`;
+    }
   );
-  if (deleteJoinMatch) {
-    const [, t1, a, t2, b, joinCol2, joinCol1, whereClause] = deleteJoinMatch;
-    let newWhere = whereClause;
-    newWhere = newWhere.replace(
-      new RegExp(`(\\w+\\.)?(\\w+)\\s*=\\s*\\?`, 'g'),
-      (match, prefix, colName) => {
-        if (prefix && prefix.trim() === b + '.') {
-          return `${joinCol1} IN (SELECT ${joinCol2} FROM ${t2} WHERE ${colName}=?)`;
-        }
-        return match;
-      }
-    );
-    newWhere = newWhere.replace(new RegExp(`\\b${a}\\.`, 'g'), '');
-    s = `DELETE FROM ${t1} WHERE ${newWhere}`;
-  }
+
+  // SQLite INSERT OR IGNORE / REPLACE → MySQL INSERT IGNORE / REPLACE
+  s = s.replace(/\bINSERT\s+OR\s+IGNORE\s+INTO\b/gi, 'INSERT IGNORE INTO');
+  s = s.replace(/\bINSERT\s+OR\s+REPLACE\s+INTO\b/gi, 'REPLACE INTO');
 
   return s;
 }
 
-// ─── Query API (mysql2/promise compatible) ─────────────────────────────────
+// ─── Query API (mysql2/promise compatible) ───────────────────────────────────
 
-function executeQuery(sql, params = []) {
-  // Convert JS booleans, Date objects, and undefined to SQLite-safe values
-  const safeParams = (params || []).map(p => {
-    if (typeof p === 'boolean') return p ? 1 : 0;
-    if (p instanceof Date) return p.toISOString();
-    if (p === undefined) return null;
-    return p;
-  });
-  const converted = convertQuerySql(sql);
-  const trimmed = converted.trim();
-  const upperStart = trimmed.toUpperCase();
+function query(sqlOrOpts, params) {
+  const sql = typeof sqlOrOpts === 'string' ? sqlOrOpts : (sqlOrOpts && (sqlOrOpts.sql || sqlOrOpts));
+  return pool.query(translateSql(sql), params);
+}
 
+// ─── Transactions ────────────────────────────────────────────────────────────
+
+async function transaction(work) {
+  const conn = await pool.getConnection();
   try {
-    if (upperStart.startsWith('SELECT')) {
-      return [db.prepare(converted).all(...safeParams), []];
-    } else if (upperStart.startsWith('INSERT')) {
-      const result = db.prepare(converted).run(...safeParams);
-      return [{ insertId: Number(result.lastInsertRowid), affectedRows: result.changes }, []];
-    } else if (upperStart.startsWith('UPDATE') || upperStart.startsWith('DELETE')) {
-      const result = db.prepare(converted).run(...safeParams);
-      return [{ affectedRows: result.changes }, []];
-    } else {
-      db.exec(converted);
-      return [{}, []];
-    }
+    await conn.beginTransaction();
+    const wrapped = {
+      query(sql, params) { return conn.query(translateSql(sql), params); },
+    };
+    const result = await work(wrapped);
+    await conn.commit();
+    return result;
   } catch (e) {
-    if (e.code === 'SQLITE_CONSTRAINT_UNIQUE' || e.code === 'SQLITE_CONSTRAINT') {
-      if (/^\s*INSERT\s+OR\s+IGNORE\b/i.test(trimmed)) {
-        return [{ insertId: 0, affectedRows: 0 }, []];
-      }
-      // MySQL ER_DUP_ENTRY equivalent for duplicate key
-      e.code = 'ER_DUP_ENTRY';
-    }
+    try { await conn.rollback(); } catch (x) { /* connection may already be broken */ }
     throw e;
+  } finally {
+    conn.release();
   }
 }
 
-const pool = {
-  query(sqlOrOpts, params) {
-    const sql = typeof sqlOrOpts === 'string' ? sqlOrOpts : (sqlOrOpts.sql || sqlOrOpts);
-    return Promise.resolve(executeQuery(sql, params || []));
-  },
-  getConnection() {
-    return {
-      query(sql, params) { return Promise.resolve(executeQuery(sql, params || [])); },
-      beginTransaction() { db.exec('BEGIN'); return Promise.resolve(); },
-      commit() { db.exec('COMMIT'); return Promise.resolve(); },
-      rollback() { try { db.exec('ROLLBACK'); } catch(e) {} return Promise.resolve(); },
-      release() {},
-    };
-  },
-  end() { db.close(); return Promise.resolve(); }
-};
-
-// ─── Database Initialization ───────────────────────────────────────────────
+// ─── Database Initialization ─────────────────────────────────────────────────
 
 let initialized = false;
 
@@ -164,7 +100,22 @@ async function initializeDatabase() {
   if (initialized) return;
   initialized = true;
 
-  // Read and convert schema
+  // 1. Ensure the database exists (mysql2 pools connect lazily)
+  const admin = await mysql.createConnection({
+    host: DB_HOST,
+    port: DB_PORT,
+    user: DB_USER,
+    password: DB_PASSWORD,
+  });
+  try {
+    await admin.query(
+      `CREATE DATABASE IF NOT EXISTS \`${DB_NAME}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`
+    );
+  } finally {
+    await admin.end();
+  }
+
+  // 2. Apply schema (MySQL 8 DDL from src/main/resources/schema.sql)
   const schemaPath = path.join(__dirname, '..', 'src', 'main', 'resources', 'schema.sql');
   const rawSchema = fs.readFileSync(schemaPath, 'utf8');
   const statements = rawSchema
@@ -174,115 +125,109 @@ async function initializeDatabase() {
     .filter(s => s.length > 0);
 
   for (const stmt of statements) {
-    const converted = convertSchemaSql(stmt);
-    if (converted.trim()) {
-      try { db.exec(converted); } catch (e) {
-        if (!e.message.includes('already exists')) {
-          console.error('Schema error:', e.message.substring(0, 100));
-        }
+    try {
+      await pool.query(stmt);
+    } catch (e) {
+      if (e.code !== 'ER_TABLE_EXISTS_ERROR') {
+        console.error('Schema error:', e.message.substring(0, 100));
       }
     }
   }
 
-  // OTP verifications table
-  db.exec(`CREATE TABLE IF NOT EXISTS otp_verifications (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    email TEXT NOT NULL,
-    otp_hash TEXT NOT NULL,
-    purpose TEXT NOT NULL DEFAULT 'registration',
-    expires_at TEXT NOT NULL,
-    attempts INTEGER DEFAULT 0,
-    max_attempts INTEGER DEFAULT 5,
-    is_verified INTEGER DEFAULT 0,
-    is_used INTEGER DEFAULT 0,
-    created_at TEXT DEFAULT (datetime('now','localtime')),
-    updated_at TEXT DEFAULT (datetime('now','localtime'))
-  )`);
-  try { db.exec('CREATE INDEX idx_otp_email_purpose ON otp_verifications(email, purpose)'); } catch(e) {}
-  try { db.exec('CREATE INDEX idx_otp_expires ON otp_verifications(expires_at)'); } catch(e) {}
-  try { db.exec('CREATE INDEX idx_otp_created ON otp_verifications(created_at)'); } catch(e) {}
-
-  // Pending registrations table (multi-step registration state)
-  db.exec(`CREATE TABLE IF NOT EXISTS pending_registrations (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    token TEXT NOT NULL UNIQUE,
-    role TEXT NOT NULL,
-    full_name TEXT NOT NULL,
-    email TEXT NOT NULL,
-    phone TEXT NOT NULL,
-    password_hash TEXT NOT NULL,
-    college_name TEXT,
-    preferred_area TEXT,
+  // 3. pending_registrations table — the schema.sql block for this table still
+  // contains SQLite-only column defaults, so it is created here in MySQL dialect.
+  // Mirrors the columns the previous (SQLite) implementation created.
+  await pool.query(`CREATE TABLE IF NOT EXISTS pending_registrations (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    token VARCHAR(64) NOT NULL UNIQUE,
+    role VARCHAR(30) NOT NULL,
+    full_name VARCHAR(100) NOT NULL,
+    email VARCHAR(120) NOT NULL,
+    phone VARCHAR(20) NOT NULL,
+    password_hash VARCHAR(255) NOT NULL,
+    college_name VARCHAR(150),
+    preferred_area VARCHAR(100),
     skills TEXT,
     bio TEXT,
-    emergency_contact TEXT,
-    catering_name TEXT,
+    emergency_contact VARCHAR(20),
+    catering_name VARCHAR(150),
     business_address TEXT,
-    business_phone TEXT,
-    phone_verified INTEGER DEFAULT 0,
-    email_verified INTEGER DEFAULT 0,
-    status TEXT DEFAULT 'pending',
-    current_step TEXT DEFAULT 'info',
-    created_at TEXT DEFAULT (datetime('now','localtime')),
-    updated_at TEXT DEFAULT (datetime('now','localtime')),
-    expires_at TEXT NOT NULL
-  )`);
-  try { db.exec('CREATE INDEX idx_pend_token ON pending_registrations(token)'); } catch(e) {}
-  try { db.exec('CREATE INDEX idx_pend_email ON pending_registrations(email)'); } catch(e) {}
-  try { db.exec('CREATE INDEX idx_pend_phone ON pending_registrations(phone)'); } catch(e) {}
+    business_phone VARCHAR(20),
+    phone_verified TINYINT(1) DEFAULT 0,
+    email_verified TINYINT(1) DEFAULT 0,
+    status VARCHAR(30) DEFAULT 'pending',
+    current_step VARCHAR(30) DEFAULT 'info',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    expires_at VARCHAR(64) NOT NULL,
+    INDEX idx_pend_token (token),
+    INDEX idx_pend_email (email),
+    INDEX idx_pend_phone (phone)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
 
-  // Add complaint_messages table
-  db.exec(`CREATE TABLE IF NOT EXISTS complaint_messages (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    report_id INTEGER NOT NULL,
-    sender_id INTEGER NOT NULL,
+  // 4. complaint_messages table (used by the complaint chat routes)
+  await pool.query(`CREATE TABLE IF NOT EXISTS complaint_messages (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    report_id BIGINT NOT NULL,
+    sender_id BIGINT NOT NULL,
     message TEXT NOT NULL,
-    created_at TEXT DEFAULT (datetime('now','localtime')),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (report_id) REFERENCES reports(id) ON DELETE CASCADE,
     FOREIGN KEY (sender_id) REFERENCES users(id) ON DELETE CASCADE
-  )`);
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
 
-  // Migrations - safe ALTER TABLE that only adds columns if they don't exist
-  try { db.exec('ALTER TABLE catering_jobs ADD COLUMN location_photo_url TEXT'); } catch(e) {}
-  try { db.exec('ALTER TABLE student_profiles ADD COLUMN profile_photo_url TEXT'); } catch(e) {}
-  try { db.exec('ALTER TABLE owner_profiles ADD COLUMN profile_photo_url TEXT'); } catch(e) {}
-  // payment_records missing columns for Razorpay integration
-  try { db.exec('ALTER TABLE payment_records ADD COLUMN razorpay_order_id TEXT'); } catch(e) {}
-  try { db.exec('ALTER TABLE payment_records ADD COLUMN razorpay_payment_id TEXT'); } catch(e) {}
-  try { db.exec('ALTER TABLE payment_records ADD COLUMN razorpay_signature TEXT'); } catch(e) {}
-  try { db.exec('ALTER TABLE payment_records ADD COLUMN razorpay_receipt TEXT'); } catch(e) {}
-  try { db.exec('ALTER TABLE payment_records ADD COLUMN payment_method TEXT'); } catch(e) {}
-  try { db.exec('ALTER TABLE payment_records ADD COLUMN transaction_id TEXT'); } catch(e) {}
-  try { db.exec('ALTER TABLE payment_records ADD COLUMN environment TEXT DEFAULT "TEST"'); } catch(e) {}
-  try { db.exec('ALTER TABLE payment_records ADD COLUMN failure_reason TEXT'); } catch(e) {}
-  try { db.exec('ALTER TABLE payment_records ADD COLUMN confirmed_paid_at TEXT'); } catch(e) {}
-  try { db.exec('ALTER TABLE payment_records ADD COLUMN initiated_at TEXT'); } catch(e) {}
-  try { db.exec("ALTER TABLE payment_records ADD COLUMN updated_at TEXT DEFAULT (datetime('now','localtime'))"); } catch(e) {}
+  // 5. Safe additive migrations — add columns only when missing
+  const addColumn = async (table, column, ddl) => {
+    try {
+      const [cols] = await pool.query(
+        `SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
+         WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND COLUMN_NAME = ?`,
+        [DB_NAME, table, column]
+      );
+      if (cols.length === 0) {
+        await pool.query(`ALTER TABLE \`${table}\` ADD COLUMN ${ddl}`);
+      }
+    } catch (e) {
+      console.error(`Migration ${table}.${column} failed:`, e.message.substring(0, 120));
+    }
+  };
+
+  await addColumn('catering_jobs', 'location_photo_url', 'TEXT');
+  await addColumn('student_profiles', 'profile_photo_url', 'TEXT');
+  await addColumn('owner_profiles', 'profile_photo_url', 'TEXT');
+  // payment_records columns for Razorpay integration
+  await addColumn('payment_records', 'razorpay_order_id', 'TEXT');
+  await addColumn('payment_records', 'razorpay_payment_id', 'TEXT');
+  await addColumn('payment_records', 'razorpay_signature', 'TEXT');
+  await addColumn('payment_records', 'razorpay_receipt', 'VARCHAR(255) NULL');
+  await addColumn('payment_records', 'payment_method', 'VARCHAR(50) NULL');
+  await addColumn('payment_records', 'transaction_id', 'VARCHAR(64) NULL');
+  await addColumn('payment_records', 'environment', `VARCHAR(10) DEFAULT 'TEST'`);
+  await addColumn('payment_records', 'failure_reason', 'TEXT');
+  await addColumn('payment_records', 'confirmed_paid_at', 'TIMESTAMP NULL');
+  await addColumn('payment_records', 'initiated_at', 'TIMESTAMP NULL');
+  await addColumn('payment_records', 'updated_at', 'TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP');
 
   // Job lifecycle migrations
-  try { db.exec('ALTER TABLE catering_jobs ADD COLUMN owner_decision TEXT'); } catch(e) {}
-  try { db.exec("ALTER TABLE catering_jobs ADD COLUMN owner_decision_at TEXT"); } catch(e) {}
+  await addColumn('catering_jobs', 'owner_decision', 'VARCHAR(30) NULL');
+  await addColumn('catering_jobs', 'owner_decision_at', 'TIMESTAMP NULL');
 
-  // Seed data
+  // 6. Seed data
   if (process.env.RUN_SEED !== 'false') {
     const seedPath = path.join(__dirname, '..', 'src', 'main', 'resources', 'data.sql');
     if (fs.existsSync(seedPath)) {
       const rawSeed = fs.readFileSync(seedPath, 'utf8');
-      const convertedSeed = rawSeed
+      const seedStatements = rawSeed
         .replace(/--.*$/gm, '')
-        .replace(/\bINSERT\s+IGNORE\s+INTO\b/gi, 'INSERT OR IGNORE INTO')
-        .replace(/\bNOW\(\)/gi, "datetime('now','localtime')");
-      
-      const seedStatements = convertedSeed
         .split(';')
         .map(s => s.trim())
         .filter(s => s.length > 0 && s.toUpperCase().startsWith('INSERT'));
 
       for (const stmt of seedStatements) {
         try {
-          db.exec(stmt);
+          await pool.query(stmt);
         } catch (e) {
-          if (!e.message.includes('UNIQUE constraint') && !e.message.includes('PRIMARY KEY constraint')) {
+          if (e.code !== 'ER_DUP_ENTRY') {
             console.warn('Seed warning:', e.message.substring(0, 120));
           }
         }
@@ -290,19 +235,7 @@ async function initializeDatabase() {
     }
   }
 
-  console.log('SQLite database initialized successfully');
-}
-
-async function transaction(work) {
-  try {
-    db.exec('BEGIN');
-    const result = await work(pool);
-    db.exec('COMMIT');
-    return result;
-  } catch (e) {
-    try { db.exec('ROLLBACK'); } catch(x) {}
-    throw e;
-  }
+  console.log('MySQL database initialized successfully');
 }
 
 module.exports = { pool, initializeDatabase, transaction };
