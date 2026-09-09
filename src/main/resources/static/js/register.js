@@ -65,9 +65,10 @@ const RegWizard = {
     document.getElementById('regPassError').style.display = 'none';
 
     const phone = document.getElementById('regPhone').value.trim();
-    if (!/^\+?[\d\s-]{7,20}$/.test(phone)) {
+    const digitsOnly = phone.replace(/[\s\-()+]/g, '');
+    if (!/^\+?[\d\s-]{7,20}$/.test(phone) || !/^\d{8,15}$/.test(digitsOnly)) {
       const err = document.getElementById('regPhoneError');
-      err.textContent = 'Enter a valid phone number';
+      err.textContent = 'Enter a valid phone number — e.g. 9876543210 or +91 9876543210';
       err.style.display = 'block';
       return false;
     }
@@ -96,13 +97,18 @@ const RegWizard = {
       btn.disabled = true;
       btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Processing...';
 
-      const res = await fetch('/api/auth/register/start', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.message || 'Registration failed');
+      let res;
+      try {
+        res = await fetch('/api/auth/register/start', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+      } catch (networkErr) {
+        throw new Error('Cannot reach the server. Check your internet connection and try again.');
+      }
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.message || `Registration failed (error ${res.status})`);
 
       this._token = data.data.registrationToken;
       document.getElementById('phoneDisplay').textContent = data.data.maskedPhone;
@@ -123,19 +129,24 @@ const RegWizard = {
 
   async _sendPhoneOtp() {
     try {
-      const res = await fetch('/api/auth/register/phone/send', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ registrationToken: this._token })
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.message || 'Failed to send code');
+      let res;
+      try {
+        res = await fetch('/api/auth/register/phone/send', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ registrationToken: this._token })
+        });
+      } catch (networkErr) {
+        throw new Error('Cannot reach the server. Check your internet connection and try again.');
+      }
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.message || `Failed to send code (error ${res.status})`);
 
       document.getElementById('phoneDisplay').textContent = data.data?.maskedPhone || '';
       this._startPhoneCooldown(data.data?.expiresIn || 300);
       showToast('Verification code sent to your phone', 'success');
     } catch (err) {
-      showToast(err.message || 'Failed to send verification code', 'danger');
+      showToast(err.message || 'Failed to send verification code. Please try again.', 'danger');
     }
   },
 

@@ -19,6 +19,19 @@ const REGISTRATION_EXPIRY_HOURS = 24; // pending registration expires after 24h
 const PHONE_PURPOSE = 'phone_registration';
 const EMAIL_PURPOSE = 'email_registration';
 
+// Phone OTP send throttling (in-memory per process, mirrors otp.js approach)
+const PHONE_RESEND_COOLDOWN_MS = Number(process.env.PHONE_RESEND_COOLDOWN_SECONDS || 60) * 1000;
+const PHONE_RATE_WINDOW_MS = 15 * 60 * 1000;
+const PHONE_MAX_PER_SESSION = 5;   // code sends per registration session per window
+const PHONE_MAX_PER_IP = 20;       // code sends per client IP per window (anti-flooding)
+const phoneSendLog = new Map();    // registrationToken → [timestamps]
+const phoneIpLog = new Map();      // clientIp → [timestamps]
+setInterval(() => {
+  const cutoff = Date.now() - PHONE_RATE_WINDOW_MS;
+  for (const [k, v] of phoneSendLog) { const f = v.filter(t => t > cutoff); f.length ? phoneSendLog.set(k, f) : phoneSendLog.delete(k); }
+  for (const [k, v] of phoneIpLog) { const f = v.filter(t => t > cutoff); f.length ? phoneIpLog.set(k, f) : phoneIpLog.delete(k); }
+}, 5 * 60 * 1000).unref();
+
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
 function generateRegToken() {
@@ -38,6 +51,24 @@ function maskEmail(email) {
   return local[0] + '***' + local.slice(-1) + '@' + domain;
 }
 
+/**
+ * Normalize a phone number to E.164 for the SMS provider.
+ * Indian inputs all become +91XXXXXXXXXX:
+ *   9876543210 / 0 98765 43210 / 91 9876543210 / +91 98765 43210
+ * Other already-international numbers just get a leading '+'. Numbers that
+ * already carry a country code are never double-prefixed.
+ */
+function normalizeIndianPhone(raw) {
+  if (!raw) return raw;
+  let p = String(raw).replace(/[\s\-().]/g, '');
+  if (/^0\d{10}$/.test(p)) p = '+91' + p.slice(1);            // 0XXXXXXXXXX → +91
+  else if (/^91\d{10}$/.test(p)) p = '+' + p;                 // 91XXXXXXXXXX → +91…
+  else if (/^\+91\d{10}$/.test(p)) { /* already E.164 */ }
+  else if (/^\d{10}$/.test(p)) p = '+91' + p;                 // bare 10-digit mobile
+  else if (!p.startsWith('+') && /^\d{8,15}$/.test(p)) p = '+' + p; // other country
+  return p;
+}
+
 // ─── Phone OTP Sending ──────────────────────────────────────────────────────
 
 /**
@@ -47,16 +78,26 @@ function maskEmail(email) {
 async function sendPhoneOtp(phone, code, senderName) {
   // Try SMS provider first
   if (process.env.SMS_PROVIDER) {
-    try {
-      const SmsProvider = getSmsProvider();
-      if (SmsProvider) {
-        await SmsProvider.send(phone, `Your ${senderName} verification code is: ${code}. It expires in 5 minutes. Do not share this code.`);
+    const SmsProvider = getSmsProvider();
+    if (SmsProvider) {
+      const to = normalizeIndianPhone(phone);
+      try {
+        await SmsProvider.send(to, `Your ${senderName} verification code is: ${code}. It expires in 5 minutes. Do not share this code.`);
         return;
+      } catch (e) {
+        // Provider failed — surface the reason in server logs only. Never fall
+        // back to email silently when an SMS provider is explicitly configured,
+        // so misconfiguration is visible instead of hidden.
+        console.error(`[REGISTRATION] SMS provider (${process.env.SMS_PROVIDER}) failed:`, e.message);
+        throw e;
       }
-    } catch (e) {
-      console.error('[REGISTRATION] SMS send failed, falling back to email:', e.message);
+    } else {
+      console.error(`[REGISTRATION] SMS_PROVIDER='${process.env.SMS_PROVIDER}' is set but has no integration. Supported: twilio.`);
+      throw Object.assign(new Error(`Unknown SMS provider: ${process.env.SMS_PROVIDER}`), { code: 'OTP_SMS_NOT_CONFIGURED' });
     }
   }
+
+  console.log('[REGISTRATION] No SMS provider configured — using email fallback for phone OTP.');
 
   // Dev fallback: send phone OTP via email
   const nodemailer = require('nodemailer');
@@ -105,7 +146,12 @@ function getSmsProvider() {
         const accountSid = process.env.TWILIO_ACCOUNT_SID;
         const authToken = process.env.TWILIO_AUTH_TOKEN;
         const from = process.env.TWILIO_PHONE_NUMBER;
-        if (!accountSid || !authToken || !from) throw new Error('Twilio credentials not configured');
+        if (!accountSid || !authToken || !from) {
+          throw Object.assign(
+            new Error('Twilio credentials not configured — set TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN and TWILIO_PHONE_NUMBER'),
+            { code: 'OTP_SMS_NOT_CONFIGURED' }
+          );
+        }
         const url = `https://api.twilio.com/2010-04-01/Accounts/${accountSid}/Messages.json`;
         const creds = Buffer.from(`${accountSid}:${authToken}`).toString('base64');
         const resp = await fetch(url, {
@@ -114,8 +160,11 @@ function getSmsProvider() {
           body: new URLSearchParams({ To: to, From: from, Body: body })
         });
         if (!resp.ok) {
-          const err = await resp.text();
-          throw new Error(`Twilio error: ${resp.status}`);
+          const errText = await resp.text();
+          // Twilio responses never echo the auth token; safe to log the body.
+          const detail = (() => { try { const j = JSON.parse(errText); return j.message ? `${j.message} (code ${j.code})` : errText.slice(0, 200); } catch { return errText.slice(0, 200); } })();
+          console.error(`[REGISTRATION] Twilio API error ${resp.status}: ${detail}`);
+          throw new Error(`Twilio error ${resp.status}: ${detail}`);
         }
       }
     };
@@ -141,15 +190,16 @@ async function startRegistration(data, clientIp) {
   if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
     return { success: false, message: 'Enter a valid email address', status: 400 };
   }
-  if (!phone || !/^\+?[\d\s-]{7,20}$/.test(phone.replace(/\s/g, ''))) {
-    return { success: false, message: 'Enter a valid phone number', status: 400 };
+  const candidatePhone = normalizeIndianPhone(phone);
+  if (!phone || !/^\+\d{8,15}$/.test(candidatePhone)) {
+    return { success: false, message: 'Enter a valid phone number (e.g. 9876543210 or +91 9876543210)', status: 400 };
   }
   if (!password || password.length < 6) {
     return { success: false, message: 'Password must be at least 6 characters', status: 400 };
   }
 
   const normalizedEmail = email.trim().toLowerCase();
-  const normalizedPhone = phone.trim().replace(/\s+/g, '');
+  const normalizedPhone = candidatePhone;
 
   // Check for existing email
   const [[existingEmail]] = await pool.query('SELECT id FROM users WHERE email=?', [normalizedEmail]);
@@ -239,6 +289,20 @@ async function sendPhoneVerification(registrationToken, clientIp) {
     return { success: false, message: 'Registration session has expired. Please start again.', status: 400 };
   }
 
+  // Anti-flooding: per-session and per-IP send throttling (sliding window)
+  const now = Date.now();
+  const cutoff = now - PHONE_RATE_WINDOW_MS;
+  const sessionSends = (phoneSendLog.get(registrationToken) || []).filter(t => t > cutoff);
+  const ipSends = (phoneIpLog.get(clientIp) || []).filter(t => t > cutoff);
+  if (sessionSends.length >= PHONE_MAX_PER_SESSION) {
+    return { success: false, message: 'Too many code requests for this registration. Please try again later.', status: 429 };
+  }
+  if (ipSends.length >= PHONE_MAX_PER_IP) {
+    return { success: false, message: 'Too many verification requests. Please try again later.', status: 429 };
+  }
+
+  console.log(`[REGISTRATION] Phone OTP requested (session=${String(registrationToken).slice(0, 8)}…, ip=${clientIp})`);
+
   const senderName = process.env.SMTP_SENDER_NAME || 'PartTime Job';
   const code = otpService.generateOtpCode();
   const otpHash = await otpService.hashOtp(code);
@@ -258,10 +322,17 @@ async function sendPhoneVerification(registrationToken, clientIp) {
 
   try {
     await sendPhoneOtp(pending.phone, code, senderName);
+    console.log(`[REGISTRATION] Phone OTP delivered via ${process.env.SMS_PROVIDER ? 'SMS (' + process.env.SMS_PROVIDER + ')' : 'email fallback'} for session=${String(registrationToken).slice(0, 8)}…`);
   } catch (e) {
     console.error('[REGISTRATION] Phone OTP send failed:', e.message);
+    if (e.code === 'OTP_SMS_NOT_CONFIGURED') {
+      return { success: false, message: 'SMS service is not configured on the server. Please contact the administrator.', status: 503 };
+    }
     return { success: false, message: 'Failed to send verification code. Please try again.', status: 503 };
   }
+
+  phoneSendLog.set(registrationToken, [...sessionSends, now]);
+  phoneIpLog.set(clientIp, [...ipSends, now]);
 
   await pool.query(
     "UPDATE pending_registrations SET current_step='phone', updated_at=datetime('now','localtime') WHERE id=?",
